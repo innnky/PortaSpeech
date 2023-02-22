@@ -9,7 +9,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        required=True,
+        default="ms",
         help="name of dataset",
     )
     args = parser.parse_args()

@@ -2,6 +2,7 @@ import os
 import re
 import random
 import json
+from collections import defaultdict
 
 import tgt
 import librosa
@@ -23,7 +24,6 @@ class Preprocessor:
         random.seed(train_config['seed'])
         self.preprocess_config = preprocess_config
         self.multi_speaker = model_config["multi_speaker"]
-        self.corpus_dir = preprocess_config["path"]["corpus_path"]
         self.in_dir = preprocess_config["path"]["raw_path"]
         self.out_dir = preprocess_config["path"]["preprocessed_path"]
         self.val_size = preprocess_config["preprocessing"]["val_size"]
@@ -33,6 +33,7 @@ class Preprocessor:
         self.sub_divide_word = preprocess_config["preprocessing"]["text"]["sub_divide_word"]
         self.max_phoneme_num = preprocess_config["preprocessing"]["text"]["max_phoneme_num"]
         self.beta_binomial_scaling_factor = preprocess_config["preprocessing"]["aligner"]["beta_binomial_scaling_factor"]
+        self.flist_path = preprocess_config["path"]["flist_path"]
 
         self.STFT = Audio.stft.TacotronSTFT(
             preprocess_config["preprocessing"]["stft"]["filter_length"],
@@ -46,8 +47,6 @@ class Preprocessor:
         self.val_prior = self.val_prior_names(
             os.path.join(self.out_dir, "val.txt"))
         self.speaker_emb = None
-        self.in_sub_dirs = [p for p in os.listdir(
-            self.in_dir) if os.path.isdir(os.path.join(self.in_dir, p))]
         if self.multi_speaker and preprocess_config["preprocessing"]["speaker_embedder"] != "none":
             self.speaker_emb = PreDefinedEmbedder(preprocess_config)
             self.speaker_emb_dict = self._init_spker_embeds(self.in_sub_dirs)
@@ -92,34 +91,36 @@ class Preprocessor:
 
         # Preprocess
         speakers = {}
-        for i, speaker in enumerate(tqdm(self.in_sub_dirs)):
+        spk_label_dict = defaultdict(list)
+        current_spk_id = 0
+        for line in open(self.flist_path).readlines():
+            spk, id_, phones, durations, pitch, energy = line.strip().split("|")
+            spk_label_dict[spk].append(line)
+            if spk not in speakers.keys():
+                speakers[spk] = current_spk_id
+                current_spk_id += 1
+
+
+        for speaker, i  in tqdm(speakers.items()):
             save_speaker_emb = self.speaker_emb is not None and speaker not in skip_speakers
             if os.path.isdir(os.path.join(self.in_dir, speaker)):
-                speakers[speaker] = i
-                for wav_name in tqdm(os.listdir(os.path.join(self.in_dir, speaker))):
-                    if ".wav" not in wav_name:
+                for line in tqdm(spk_label_dict[speaker]):
+                    _, basename, phones_with_word_boundary, durations, pitch, energy = line.strip().split("|")
+
+                    ret = self.process_utterance(
+                        phones_with_word_boundary, durations, speaker, basename, save_speaker_emb)
+                    if ret is None:
                         continue
+                    else:
+                        info, n, spker_embed = ret
 
-                    basename = wav_name.split(".")[0]
-                    tg_path = os.path.join(
-                        self.out_dir, "TextGrid", speaker, "{}.TextGrid".format(
-                            basename)
-                    )
-                    if os.path.exists(tg_path):
-                        ret = self.process_utterance(
-                            tg_path, speaker, basename, save_speaker_emb)
-                        if ret is None:
-                            continue
+                    if self.val_prior is not None:
+                        if basename not in self.val_prior:
+                            train.append(info)
                         else:
-                            info, n, spker_embed = ret
-
-                        if self.val_prior is not None:
-                            if basename not in self.val_prior:
-                                train.append(info)
-                            else:
-                                val.append(info)
-                        else:
-                            out.append(info)
+                            val.append(info)
+                    else:
+                        out.append(info)
                     if save_speaker_emb:
                         self.speaker_emb_dict[speaker].append(spker_embed)
 
@@ -184,39 +185,41 @@ class Preprocessor:
 
         return out
 
-    def process_utterance(self, tg_path, speaker, basename, save_speaker_emb):
+    def get_label(self,  phones_with_word_boundary):
+        phones_with_word_boundary = phones_with_word_boundary.split(" ")
+        phones_per_word = []
+        phones_count = 0
+        phones = []
+        for ph in phones_with_word_boundary:
+            if ph not in ["^"]:
+                phones.append(ph)
+                phones_count += 1
+            else:
+                phones_per_word.append(phones_count)
+                phones_count = 0
+        assert len(phones) == sum(phones_per_word)
+        return phones, phones_per_word
+
+    def process_utterance(self, phones_with_word_boundary, durations, speaker, basename, save_speaker_emb):
         wav_path = os.path.join(self.in_dir, speaker,
                                 "{}.wav".format(basename))
-        text_path = os.path.join(self.in_dir, speaker,
-                                 "{}.lab".format(basename))
 
-        # Get alignments
-        textgrid = tgt.io.read_textgrid(tg_path)
-        phone, duration, start, end, phones_per_word = self.get_alignment(
-            textgrid.get_tier_by_name("phones"),
-            textgrid.get_tier_by_name("words"),
-        )
+        duration = [int(d) for d in durations.split(" ")]
+        phone, phones_per_word = self.get_label(phones_with_word_boundary)
+        assert len(duration) == len(phone)
         if self.sub_divide_word:
             phones_per_word = word_level_subdivision(
                 phones_per_word, self.max_phoneme_num)
-        text = "{" + " ".join(phone) + "}"
-        if start >= end:
-            return None
-
+        text = " ".join(phone)
         # Read and trim wav files
-        wav, _ = librosa.load(wav_path, self.sampling_rate)
+        wav, _ = librosa.load(wav_path, sr=self.sampling_rate)
         wav = wav.astype(np.float32)
         spker_embed = self.speaker_emb(wav) if save_speaker_emb else None
-        wav = wav[
-            int(self.sampling_rate * start): int(self.sampling_rate * end)
-        ]
 
-        # Read raw text
-        with open(text_path, "r") as f:
-            raw_text = f.readline().strip("\n")
 
         # Compute mel-scale spectrogram
         mel_spectrogram, _ = Audio.tools.get_mel_from_wav(wav, self.STFT)
+        assert  abs(sum(duration)-mel_spectrogram.shape[1]) < 3
         mel_spectrogram = mel_spectrogram[:, : sum(duration)]
 
         # Compute alignment prior
@@ -245,7 +248,7 @@ class Preprocessor:
         )
 
         return (
-            "|".join([basename, speaker, text, raw_text]),
+            "|".join([basename, speaker, text, "text"]),
             mel_spectrogram.shape[1],
             spker_embed,
         )
@@ -261,64 +264,6 @@ class Preprocessor:
             mel_text_probs.append(mel_i_prob)
         return np.array(mel_text_probs)
 
-    def get_alignment(self, tier_p, tier_w):
-        sil_phones = ["sil", "sp", "spn"]
-
-        phones_per_word = []
-        word_idx = 0
-        phone_count = 0
-        phones = []
-        durations = []
-        start_time = 0
-        end_time = 0
-        end_idx = 0
-        for t in tier_p._objects:
-            s, e, p = t.start_time, t.end_time, t.text
-
-            # Trim leading silences
-            if phones == []:
-                if p in sil_phones:
-                    if p == "spn":
-                        word_idx += 1
-                    continue
-                else:
-                    start_time = s
-
-            if p not in sil_phones:
-                # For ordinary phones
-                phones.append(p)
-                end_time = e
-                end_idx = len(phones)
-                phone_count += 1
-                if tier_w._objects[word_idx].end_time == e:
-                    phones_per_word.append(phone_count)
-                    phone_count = 0
-                    word_idx += 1
-            else:
-                # For silent phones
-                phones.append(p)
-                phones_per_word.append(1)
-                phone_count = 0
-                if p == "spn":
-                    word_idx += 1
-
-            durations.append(
-                int(
-                    np.round(e * self.sampling_rate / self.hop_length)
-                    - np.round(s * self.sampling_rate / self.hop_length)
-                )
-            )
-
-        # Trim tailing silences
-        trim_len = len(phones[end_idx:])
-        phones_per_word = phones_per_word[:-
-                                          trim_len] if trim_len else phones_per_word
-        phones = phones[:end_idx]
-        durations = durations[:end_idx]
-
-        assert len(phones) == sum(phones_per_word)
-
-        return phones, durations, start_time, end_time, phones_per_word
 
     def get_sub_divided_phones_per_word(self, phones_per_word, max_phoneme_num):
         res = []

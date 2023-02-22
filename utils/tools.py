@@ -122,13 +122,14 @@ def log(
         logger.add_scalar("Loss/helper_loss", losses[5], step)
 
     if fig is not None:
-        logger.add_figure(tag, fig)
+        logger.add_figure(tag, fig, global_step=step)
 
     if audio is not None:
         logger.add_audio(
             tag,
             audio / max(abs(audio)),
             sample_rate=sampling_rate,
+            global_step=step
         )
 
 

@@ -1,0 +1,31 @@
+seed: 1234
+dist_config:
+  dist_backend: "nccl"
+  dist_url: "tcp://localhost:80000"
+  world_size: 1
+path:
+  output_path: "./output"
+optimizer:
+  batch_size: 6
+  betas: [0.9, 0.98]
+  eps: 0.000000001
+  weight_decay: 0.0
+  grad_clip_thresh: 1.0
+  grad_acc_step: 1
+  warm_up_step: 4000
+  anneal_steps: [200000]
+  anneal_rate: 0.3
+step:
+  total_step: 200000
+  log_step: 5
+  synth_step: 10
+  val_step: 10
+  save_step: 20
+  ctc_step: 1000
+aligner:
+  helper_type: "dga" # ["dga", "ctc", "none"]
+  ctc_weight_start: 1.0
+  ctc_weight_end: 1.0
+  guided_sigma: 0.4
+  guided_lambda: 1.0
+  guided_weight: 1.0

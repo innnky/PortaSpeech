@@ -25,6 +25,10 @@ torch.backends.cudnn.benchmark = True
 
 def train(rank, args, configs, batch_size, num_gpus):
     preprocess_config, model_config, train_config = configs
+    output_path = train_config["path"]["output_path"]
+    train_config["path"]["ckpt_path"] = os.path.join(output_path, args.dataset, "ckpt")
+    train_config["path"]["log_path"] = os.path.join(output_path, args.dataset, "log")
+    train_config["path"]["result_path"] = os.path.join(output_path, args.dataset, "result")
     if num_gpus > 1:
         init_process_group(
             backend=train_config["dist_config"]['dist_backend'],
@@ -32,7 +36,7 @@ def train(rank, args, configs, batch_size, num_gpus):
             world_size=train_config["dist_config"]['world_size'] * num_gpus,
             rank=rank,
         )
-    device = torch.device('cuda:{:d}'.format(rank))
+    device = torch.device('cuda:{:d}'.format(rank)) if torch.cuda.is_available() else torch.device("cpu")
 
     # Get dataset
     dataset = Dataset(
@@ -152,12 +156,14 @@ def train(rank, args, configs, batch_size, num_gpus):
                         log(
                             train_logger,
                             fig=fig,
-                            tag="Training/step_{}_{}".format(step, tag),
+                            tag="Training",
+                            step=step
                         )
                         log(
                             train_logger,
                             fig=attn_fig,
-                            tag="Training_attn/step_{}_{}".format(step, tag),
+                            tag="Training_attn",
+                            step=step
                         )
                         sampling_rate = preprocess_config["preprocessing"]["audio"][
                             "sampling_rate"
@@ -166,15 +172,15 @@ def train(rank, args, configs, batch_size, num_gpus):
                             train_logger,
                             audio=wav_reconstruction,
                             sampling_rate=sampling_rate,
-                            tag="Training/step_{}_{}_reconstructed".format(
-                                step, tag),
+                            tag="Training/reconstructed",
+                            step=step
                         )
                         log(
                             train_logger,
                             audio=wav_prediction,
                             sampling_rate=sampling_rate,
-                            tag="Training/step_{}_{}_synthesized".format(
-                                step, tag),
+                            tag="Training/synthesized",
+                            step=step
                         )
 
                     if step % val_step == 0:
@@ -188,6 +194,7 @@ def train(rank, args, configs, batch_size, num_gpus):
                         model.train()
 
                     if step % save_step == 0:
+
                         torch.save(
                             {
                                 "model": model.module.state_dict() if num_gpus > 1 else model.state_dict(),
@@ -198,6 +205,11 @@ def train(rank, args, configs, batch_size, num_gpus):
                                 "{}.pth.tar".format(step),
                             ),
                         )
+                        del_ckpt_path = os.path.join(train_config["path"]["ckpt_path"],
+                                            "{}.pth.tar".format(step - 3 * save_step), )
+                        if os.path.exists(del_ckpt_path):
+                            print("remove", del_ckpt_path)
+                            os.remove(del_ckpt_path)
 
                 if step == total_step:
                     train = False
@@ -212,14 +224,14 @@ def train(rank, args, configs, batch_size, num_gpus):
 
 
 if __name__ == "__main__":
-    assert torch.cuda.is_available(), "CPU training is not allowed."
+    # assert torch.cuda.is_available(), "CPU training is not allowed."
     parser = argparse.ArgumentParser()
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument("--restore_step", type=int, default=0)
     parser.add_argument(
         "--dataset",
         type=str,
-        required=True,
+        default="ms",
         help="name of dataset",
     )
     args = parser.parse_args()
@@ -232,7 +244,7 @@ if __name__ == "__main__":
     # Set Device
     torch.manual_seed(train_config["seed"])
     torch.cuda.manual_seed(train_config["seed"])
-    num_gpus = torch.cuda.device_count()
+    num_gpus = max(torch.cuda.device_count(), 1)
     batch_size = int(train_config["optimizer"]["batch_size"] / num_gpus)
     helper_type = train_config["aligner"]["helper_type"]
 

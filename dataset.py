@@ -5,7 +5,7 @@ import os
 import numpy as np
 from torch.utils.data import Dataset
 
-from text import text_to_sequence
+from text import cleaned_text_to_sequence
 from utils.tools import pad_1D, pad_2D, pad_3D
 
 
@@ -36,7 +36,7 @@ class Dataset(Dataset):
         speaker = self.speaker[idx]
         speaker_id = self.speaker_map[speaker]
         raw_text = self.raw_text[idx]
-        phone = np.array(text_to_sequence(self.text[idx], self.cleaners))
+        phone = np.array(cleaned_text_to_sequence(self.text[idx].split(" ")))
         mel_path = os.path.join(
             self.preprocessed_path,
             "mel",

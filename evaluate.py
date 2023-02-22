@@ -67,25 +67,29 @@ def evaluate(device, model, step, configs, logger=None, vocoder=None, len_losses
         log(
             logger,
             fig=fig,
-            tag="Validation/step_{}_{}".format(step, tag),
+            tag="Validation",
+            step=step
         )
         log(
             logger,
             fig=attn_fig,
-            tag="Validation_attn/step_{}_{}".format(step, tag),
+            tag="Validation_attn",
+            step=step
         )
         sampling_rate = preprocess_config["preprocessing"]["audio"]["sampling_rate"]
         log(
             logger,
             audio=wav_reconstruction,
             sampling_rate=sampling_rate,
-            tag="Validation/step_{}_{}_reconstructed".format(step, tag),
+            tag="Validation/reconstructed",
+            step=step
         )
         log(
             logger,
             audio=wav_prediction,
             sampling_rate=sampling_rate,
-            tag="Validation/step_{}_{}_synthesized".format(step, tag),
+            tag="Validation/synthesized",
+            step=step
         )
 
     return message
